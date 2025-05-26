@@ -1,0 +1,343 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Carretera con Autos Animados</title>
+  <style>
+    canvas {
+      border: 1px solid black;
+    }
+  </style>
+</head>
+<body onload="main();">
+  <canvas id="webglcanvas" width="500" height="500"></canvas>
+
+  <script id="vs" type="x-shader/x-vertex">
+    attribute vec2 aPos;
+    uniform mat4 uMatrizProyeccion;
+    uniform mat4 uMatrizModelo;
+    void main() {
+      gl_Position = uMatrizProyeccion * uMatrizModelo * vec4(aPos, 0.0, 1.0);
+    }
+  </script>
+
+  <script id="fs" type="x-shader/x-fragment">
+    precision mediump float;
+    uniform vec4 uColor;
+    void main() {
+      gl_FragColor = uColor;
+    }
+  </script>
+
+  <script>
+    let gl, uColor, uMatrizProyeccion, uMatrizModelo;
+    let MatrizProyeccion = new Array(16);
+    let VAOlineaHorizontal, VAOlineaVertical, VAOcarretera, VAOcoche;
+    let numHorizontalVertices = 0, numVerticalVertices = 0;
+    let cars = [];
+
+    
+
+    function identidad(r = new Array(16)) {
+      for (let i = 0; i < 16; i++) r[i] = (i % 5 == 0) ? 1 : 0;
+      return r;
+    }
+
+    function traslacion(tx, ty, r = identidad()) {
+      r[12] = tx;
+      r[13] = ty;
+      return r;
+    }
+
+    function ortho(m, l, r, b, t, n, f) {
+      identidad(m);
+      m[0] = 2 / (r - l);
+      m[5] = 2 / (t - b);
+      m[10] = -2 / (f - n);
+      m[12] = -(r + l) / (r - l);
+      m[13] = -(t + b) / (t - b);
+      m[14] = -(f + n) / (f - n);
+    }
+
+    function verificarShader(gl, shader, tipo) {
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error("Error compilando " + tipo + ":", gl.getShaderInfoLog(shader));
+      }
+    }
+
+    function verificarPrograma(gl, programa) {
+      if (!gl.getProgramParameter(programa, gl.LINK_STATUS)) {
+        console.error("Error enlazando el programa:", gl.getProgramInfoLog(programa));
+      }
+    }
+    class Car {
+      constructor(speed, color, offset) {
+        this.progress = offset;
+        this.speed = speed;
+        this.bodyColor = color;
+        this.wheelColor = [0.1, 0.1, 0.1, 1];
+        this.windowColor = [color[0] * 0.8, color[1] * 0.8, color[2] * 0.8, 1];
+        this.segments = [
+          { length: 16, dir: [0, -1], start: [-8, 11], rot: -90 },
+          { length: 6.4, dir: [1, 0], start: [-8, -5], rot: 0 },
+          { length: 12.4, dir: [0, 1], start: [0, -6], rot: 90 },
+          { length: 7, dir: [1, 0], start: [0, 6.4], rot: 0 },
+          { length: 6.2, dir: [0, -1], start: [7, 6.4], rot: -90 }
+        ];
+        this.totalLength = this.segments.reduce((a, b) => a + b.length, 0);
+      }
+
+      update(deltaTime) {
+        this.progress += this.speed * deltaTime;
+        this.progress %= this.totalLength;
+      }
+
+      getTransform() {
+        let acum = 0;
+        for (const seg of this.segments) {
+          if (this.progress <= acum + seg.length) {
+            const prog = this.progress - acum;
+            return {
+              x: seg.start[0] + seg.dir[0] * prog,
+              y: seg.start[1] + seg.dir[1] * prog,
+              rot: seg.rot
+            };
+          }
+          acum += seg.length;
+        }
+        return { x: 0, y: 0, rot: 0 };
+      }
+    }
+    function crearLineas() {
+      let verticesHorizontal = [];
+      const dash = 0.5, gap = 0.5;
+      for (let x = -8.0; x < 8.0; x += dash + gap) {
+        verticesHorizontal.push(x, 0.0, x + dash, 0.0);
+      }
+      numHorizontalVertices = verticesHorizontal.length;
+
+      VAOlineaHorizontal = gl.createVertexArray();
+      gl.bindVertexArray(VAOlineaHorizontal);
+      let VBO = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, VBO);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verticesHorizontal), gl.STATIC_DRAW);
+      let aPos = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), "aPos");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(null);
+
+      let verticesVertical = [];
+      for (let y = -8.0; y < 8.0; y += dash + gap) {
+        verticesVertical.push(0.0, y, 0.0, y + dash);
+      }
+      numVerticalVertices = verticesVertical.length;
+
+      VAOlineaVertical = gl.createVertexArray();
+      gl.bindVertexArray(VAOlineaVertical);
+      VBO = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, VBO);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verticesVertical), gl.STATIC_DRAW);
+      aPos = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), "aPos");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(null);
+    }
+
+    function crearCarretera() {
+      let vertices = [-8.0, -1.0, -8.0, 1.0, 8.0, -1.0, 8.0, 1.0];
+      VAOcarretera = gl.createVertexArray();
+      gl.bindVertexArray(VAOcarretera);
+      let VBO = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, VBO);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+      let aPos = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), "aPos");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+      gl.bindVertexArray(null);
+    }
+
+    function crearCoche() {
+      const cuerpo = [-0.3, -0.2, 0.3, -0.2, 0.2, 0.2, -0.2, 0.2];
+      const techo = [-0.2, 0.2, 0.2, 0.2, 0.0, 0.4];
+      const ruedas = [
+        -0.25, -0.25, -0.15, -0.25, -0.15, -0.15, -0.25, -0.15,
+        0.15, -0.25, 0.25, -0.25, 0.25, -0.15, 0.15, -0.15
+      ];
+
+      const crearParteAuto = (vertices) => {
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+        const vbo = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+        const aPos = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), "aPos");
+        gl.enableVertexAttribArray(aPos);
+        gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+        gl.bindVertexArray(null);
+        return { vao, count: vertices.length / 2 };
+      };
+
+      return {
+        cuerpo: crearParteAuto(cuerpo),
+        techo: crearParteAuto(techo),
+        ruedas: crearParteAuto(ruedas)
+      };
+    }
+
+    function dibujarCarretera() {
+      gl.uniform4fv(uColor, [0.2, 0.2, 0.2, 1.0]);
+
+      let modelo = traslacion(-8, 3);
+      modelo[0] = 0.2; modelo[5] = 8.0;
+      gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+      gl.bindVertexArray(VAOcarretera);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      modelo = traslacion(-5.6, -6);
+      modelo[0] = 0.5; modelo[5] = 1.8;
+      gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      modelo = traslacion(0, 0.2);
+      modelo[0] = 0.2; modelo[5] = 8.0;
+      gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      modelo = traslacion(3, 6.4);
+      modelo[0] = 0.5; modelo[5] = 1.8;
+      gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      modelo = traslacion(7, 0.2);
+      modelo[0] = 0.2; modelo[5] = 8.0;
+      gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      gl.bindVertexArray(null);
+    }
+
+    function dibujarCoches() {
+      cars.forEach(car => {
+        const { x, y, rot } = car.getTransform();
+        let modelo = identidad();
+        const ang = rot * Math.PI / 180;
+
+        modelo[0] = Math.cos(ang);
+        modelo[1] = Math.sin(ang);
+        modelo[4] = -Math.sin(ang);
+        modelo[5] = Math.cos(ang);
+        modelo[12] = x;
+        modelo[13] = y;
+
+        // Cuerpo
+        gl.uniform4fv(uColor, car.bodyColor);
+        gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+        gl.bindVertexArray(VAOcoche.cuerpo.vao);
+        gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
+
+        // Techo
+        gl.uniform4fv(uColor, car.windowColor);
+        gl.bindVertexArray(VAOcoche.techo.vao);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        // Ruedas
+        gl.uniform4fv(uColor, car.wheelColor);
+        gl.bindVertexArray(VAOcoche.ruedas.vao);
+        gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
+        gl.drawArrays(gl.TRIANGLE_FAN, 4, 4);
+      });
+    }
+
+    function dibuja() {
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      dibujarCarretera();
+
+      gl.uniform4fv(uColor, [1.0, 1.0, 1.0, 1.0]);
+
+      const dibujarLinea = (modelo, vertical) => {
+        gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+        gl.bindVertexArray(vertical ? VAOlineaVertical : VAOlineaHorizontal);
+        gl.drawArrays(gl.LINES, 0, vertical ? numVerticalVertices / 2 : numHorizontalVertices / 2);
+      };
+
+      let modelo = traslacion(-8, 3);
+      modelo[0] = 0; modelo[5] = 1.2;
+      dibujarLinea(modelo, true);
+
+      modelo = traslacion(-4, -6);
+      modelo[0] = 1; modelo[5] = 1.2;
+      dibujarLinea(modelo, false);
+
+      modelo = traslacion(0, 0.2);
+      modelo[0] = 1; modelo[5] = 0.8;
+      dibujarLinea(modelo, true);
+
+      modelo = traslacion(3, 6.4);
+      modelo[0] = 0.8;
+      dibujarLinea(modelo, false);
+
+      modelo = traslacion(7, 0);
+      modelo[5] = 0.85;
+      dibujarLinea(modelo, true);
+
+      dibujarCoches();
+    }
+
+    function animate(now) {
+      now *= 0.001;
+      animate.then = animate.then || now;
+      const deltaTime = now - animate.then;
+      animate.then = now;
+
+      cars.forEach(car => car.update(deltaTime));
+      dibuja();
+      requestAnimationFrame(animate);
+    }
+
+    function main() {
+      const canvas = document.getElementById("webglcanvas");
+      gl = canvas.getContext("webgl2");
+      gl.viewport(0, 0, canvas.width, canvas.height);
+
+      const vs = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vs, document.getElementById("vs").textContent);
+      gl.compileShader(vs);
+      verificarShader(gl, vs, "vertex shader");
+
+      const fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, document.getElementById("fs").textContent);
+      gl.compileShader(fs);
+      verificarShader(gl, fs, "fragment shader");
+
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      verificarPrograma(gl, prog);
+      gl.useProgram(prog);
+
+      uColor = gl.getUniformLocation(prog, "uColor");
+      uMatrizProyeccion = gl.getUniformLocation(prog, "uMatrizProyeccion");
+      uMatrizModelo = gl.getUniformLocation(prog, "uMatrizModelo");
+
+      ortho(MatrizProyeccion, -10, 10, -10, 10, -1, 1);
+      gl.uniformMatrix4fv(uMatrizProyeccion, false, MatrizProyeccion);
+
+      crearCarretera();
+      crearLineas();
+      VAOcoche = crearCoche();
+
+      const colors = [
+        [1, 0, 0, 1], [0, 0.5, 0, 1], [0, 0, 1, 1],
+        [1, 0.8, 0, 1], [0.5, 0, 0.5, 1], [0, 0.8, 0.8, 1]
+      ];
+      for (let i = 0; i < 6; i++) {
+        cars.push(new Car(2.5 + Math.random() * 1.5, colors[i], Math.random() * 15));
+      }
+
+      gl.clearColor(1.0, 1.0, 1.0, 1.0);
+      requestAnimationFrame(animate);
+    }
+  </script>
+</body>
+</html>
