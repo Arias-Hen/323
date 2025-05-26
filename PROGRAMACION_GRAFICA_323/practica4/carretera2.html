@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Carrera con Fondo</title>
+    <style>
+        canvas {
+            border: 1px solid black;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body onload="main();">
+    <canvas id="webglcanvas" width="500" height="500"></canvas>
+    <img src="coche.png" id="cocheTextura" hidden>
+    <img src="asfalto.png" id="asfaltoTextura" hidden>
+    <img src="cesped.png" id="cespedTextura" hidden>
+
+    <script id="vs" type="x-shader/x-vertex">
+        attribute vec2 aPos;
+        attribute vec2 aTexCoord;
+        uniform mat4 uMatrizProyeccion;
+        uniform mat4 uMatrizModelo;
+        varying vec2 vTexCoord;
+        void main() {
+          gl_Position = uMatrizProyeccion * uMatrizModelo * vec4(aPos, 0.0, 1.0);
+          vTexCoord = aTexCoord;
+        }
+    </script>
+
+    <script id="fs" type="x-shader/x-fragment">
+        precision mediump float;
+        varying vec2 vTexCoord;
+        uniform sampler2D uTextura;
+        uniform sampler2D uTexturaAsfalto;
+        uniform sampler2D uTexturaCesped;
+        uniform int uTipoTextura; // 0 = cesped, 1 = asfalto, 2 = coche
+        
+        void main() {
+          if (uTipoTextura == 0) { // Césped
+            gl_FragColor = texture2D(uTexturaCesped, vTexCoord * 10.0);
+          } else if (uTipoTextura == 1) { // Asfalto
+            gl_FragColor = texture2D(uTexturaAsfalto, vTexCoord * vec2(8.0, 1.0));
+          } else { // Coche
+            gl_FragColor = texture2D(uTextura, vTexCoord);
+          }
+        }
+    </script>
+
+    <script>
+        let gl, uMatrizProyeccion, uMatrizModelo, uTextura, uTipoTextura, uTexturaAsfalto, uTexturaCesped;
+        let MatrizProyeccion = new Array(16);
+        let VAOcarretera, VAOcoche, VAOfondo;
+        let texturaCoche, texturaAsfalto, texturaCesped;
+        let roadParts = [];
+        let car = {
+            x: -8,
+            y: 11,
+            dirX: 0,
+            dirY: -1,
+            speed: 4,
+            rot: 90,
+            reset: function() {
+                this.x = -8;
+                this.y = 11;
+                this.dirX = 0;
+                this.dirY = -1;
+                this.rot = 90;
+            }
+        };
+
+        function identidad(r = new Array(16)) {
+            for (let i = 0; i < 16; i++) r[i] = (i % 5 == 0) ? 1 : 0;
+            return r;
+        }
+
+        function traslacion(tx, ty, r = identidad()) {
+            r[12] = tx;
+            r[13] = ty;
+            return r;
+        }
+
+        function ortho(m, l, r, b, t, n, f) {
+            identidad(m);
+            m[0] = 2 / (r - l);
+            m[5] = 2 / (t - b);
+            m[10] = -2 / (f - n);
+            m[12] = -(r + l) / (r - l);
+            m[13] = -(t + b) / (t - b);
+            m[14] = -(f + n) / (f - n);
+        }
+
+        function crearTextura(gl, url, wrap) {
+            const textura = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, textura);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                new Uint8Array([255, 0, 0, 255]));
+            
+            const imagen = new Image();
+            imagen.onload = () => {
+                gl.bindTexture(gl.TEXTURE_2D, textura);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imagen);
+                gl.generateMipmap(gl.TEXTURE_2D);
+                if(wrap) {
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+                    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+                }
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            };
+            imagen.src = url;
+            return textura;
+        }
+
+        function crearTexturas() {
+            texturaCoche = crearTextura(gl, 'coche.png', false);
+            texturaAsfalto = crearTextura(gl, 'asfalto.png', true);
+            texturaCesped = crearTextura(gl, 'cesped.png', true);
+        }
+        function crearFondo() {
+            const vertices = [
+                -10, -10, 0.0, 10.0,
+                10, -10, 10.0, 10.0,
+                10, 10, 10.0, 0.0,
+                -10, 10, 0.0, 0.0
+            ];
+            const indices = [0, 1, 2, 0, 2, 3];
+
+            VAOfondo = gl.createVertexArray();
+            gl.bindVertexArray(VAOfondo);
+
+            const vbo = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+
+            const aPos = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), "aPos");
+            gl.enableVertexAttribArray(aPos);
+            gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+
+            const aTexCoord = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), "aTexCoord");
+            gl.enableVertexAttribArray(aTexCoord);
+            gl.vertexAttribPointer(aTexCoord, 2, gl.FLOAT, false, 16, 8);
+
+            const ibo = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+
+            gl.bindVertexArray(null);
+        }
+        function dibujarFondo() {
+            gl.uniform1i(uTipoTextura, 0);
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, texturaCesped);
+            gl.uniform1i(uTexturaCesped, 2);
+
+            let modelo = identidad();
+            gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+            gl.bindVertexArray(VAOfondo);
+            gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+        }
+        function crearCarretera() {
+            let vertices = [
+                -8.0, -1.0, 0.0, 0.0,
+                -8.0, 1.0, 0.0, 1.0,
+                8.0, -1.0, 1.0, 0.0,
+                8.0, 1.0, 1.0, 1.0
+            ];
+
+            VAOcarretera = gl.createVertexArray();
+            gl.bindVertexArray(VAOcarretera);
+            let VBO = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, VBO);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+            let aPos = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), "aPos");
+            gl.enableVertexAttribArray(aPos);
+            gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+            let aTexCoord = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), "aTexCoord");
+            gl.enableVertexAttribArray(aTexCoord);
+            gl.vertexAttribPointer(aTexCoord, 2, gl.FLOAT, false, 16, 8);
+            gl.bindVertexArray(null);
+        }
+
+        function crearCoche() {
+            const vertices = [
+                -0.5, -0.5, 0.0, 1.0,
+                0.5, -0.5, 1.0, 1.0,
+                0.5, 0.5, 1.0, 0.0,
+                -0.5, 0.5, 0.0, 0.0
+            ];
+            const indices = [0, 1, 2, 0, 2, 3];
+
+            const vao = gl.createVertexArray();
+            gl.bindVertexArray(vao);
+
+            const vbo = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+
+            const aPos = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), "aPos");
+            gl.enableVertexAttribArray(aPos);
+            gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+
+            const aTexCoord = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), "aTexCoord");
+            gl.enableVertexAttribArray(aTexCoord);
+            gl.vertexAttribPointer(aTexCoord, 2, gl.FLOAT, false, 16, 8);
+
+            const ibo = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+
+            gl.bindVertexArray(null);
+            return vao;
+        }
+
+        function dibujarCarretera() {
+            roadParts = [];
+            gl.uniform1i(uTipoTextura, 1);
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, texturaAsfalto);
+            gl.uniform1i(uTexturaAsfalto, 1);
+
+            let modelo = traslacion(-8, 3);
+            modelo[0] = 0.2; modelo[5] = 8.0;
+            roadParts.push({ tx: -8, ty: 3, sx: 0.2, sy: 8, minX: -8, maxX: 8, minY: -1, maxY: 1 });
+            gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+            gl.bindVertexArray(VAOcarretera);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            modelo = traslacion(-5.6, -6);
+            modelo[0] = 0.5; modelo[5] = 1.8;
+            roadParts.push({ tx: -5.6, ty: -6, sx: 0.5, sy: 1.8, minX: -8, maxX: 8, minY: -1, maxY: 1 });
+            gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            modelo = traslacion(0, 0.2);
+            modelo[0] = 0.2; modelo[5] = 8.0;
+            roadParts.push({ tx: 0, ty: 0.2, sx: 0.2, sy: 8, minX: -8, maxX: 8, minY: -1, maxY: 1 });
+            gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            modelo = traslacion(3, 6.4);
+            modelo[0] = 0.5; modelo[5] = 1.8;
+            roadParts.push({ tx: 3, ty: 6.4, sx: 0.5, sy: 1.8, minX: -8, maxX: 8, minY: -1, maxY: 1 });
+            gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            modelo = traslacion(7, 0.2);
+            modelo[0] = 0.2; modelo[5] = 8.0;
+            roadParts.push({ tx: 7, ty: 0.2, sx: 0.2, sy: 8, minX: -8, maxX: 8, minY: -1, maxY: 1 });
+            gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            gl.bindVertexArray(null);
+        }
+
+        function isOnRoad(x, y) {
+            for (const part of roadParts) {
+                const modelX = (x - part.tx) / part.sx;
+                const modelY = (y - part.ty) / part.sy;
+                if (modelX >= part.minX && modelX <= part.maxX && 
+                    modelY >= part.minY && modelY <= part.maxY) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function dibujarCoche() {
+            gl.uniform1i(uTipoTextura, 2);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, texturaCoche);
+            gl.uniform1i(uTextura, 0);
+
+            let modelo = identidad();
+            const ang = (car.rot + 90) * Math.PI / 180;
+            const escala = 0.8;
+
+            modelo[0] = Math.cos(ang) * escala;
+            modelo[1] = Math.sin(ang) * escala;
+            modelo[4] = -Math.sin(ang) * escala;
+            modelo[5] = Math.cos(ang) * escala;
+            modelo[12] = car.x;
+            modelo[13] = car.y;
+
+            gl.uniformMatrix4fv(uMatrizModelo, false, modelo);
+            gl.bindVertexArray(VAOcoche);
+            gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+        }
+
+        function actualizarPosicion(deltaTime) {
+            if (car.dirX !== 0 || car.dirY !== 0) {
+                car.x += car.dirX * car.speed * deltaTime;
+                car.y += car.dirY * car.speed * deltaTime;
+                car.rot = Math.atan2(car.dirY, car.dirX) * 180 / Math.PI;
+
+                if (!isOnRoad(car.x, car.y)) {
+                    car.reset();
+                }
+            }
+        }
+
+        function dibuja() {
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            dibujarFondo();
+            dibujarCarretera();
+            dibujarCoche();
+        }
+
+        function animate(now) {
+            now *= 0.001;
+            animate.then = animate.then || now;
+            const deltaTime = now - animate.then;
+            animate.then = now;
+
+            actualizarPosicion(deltaTime);
+            dibuja();
+            requestAnimationFrame(animate);
+        }
+
+        function main() {
+            const canvas = document.getElementById("webglcanvas");
+            gl = canvas.getContext("webgl2");
+            gl.viewport(0, 0, canvas.width, canvas.height);
+
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+            const vs = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vs, document.getElementById("vs").textContent);
+            gl.compileShader(vs);
+
+            const fs = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fs, document.getElementById("fs").textContent);
+            gl.compileShader(fs);
+
+            const prog = gl.createProgram();
+            gl.attachShader(prog, vs);
+            gl.attachShader(prog, fs);
+            gl.linkProgram(prog);
+            gl.useProgram(prog);
+
+            uMatrizProyeccion = gl.getUniformLocation(prog, "uMatrizProyeccion");
+            uMatrizModelo = gl.getUniformLocation(prog, "uMatrizModelo");
+            uTextura = gl.getUniformLocation(prog, "uTextura");
+            uUsarTextura = gl.getUniformLocation(prog, "uUsarTextura");
+            uTexturaCesped = gl.getUniformLocation(prog, 'uTexturaCesped');
+            uTipoTextura = gl.getUniformLocation(prog, 'uTipoTextura');
+            uTexturaAsfalto = gl.getUniformLocation(prog, "uTexturaAsfalto");
+
+            ortho(MatrizProyeccion, -10, 10, -10, 10, -1, 1);
+            gl.uniformMatrix4fv(uMatrizProyeccion, false, MatrizProyeccion);
+
+            crearTexturas();
+            crearFondo(); 
+            crearCarretera();
+            VAOcoche = crearCoche();
+
+            canvas.addEventListener('click', (event) => {
+                const rect = canvas.getBoundingClientRect();
+                const x = (event.clientX - rect.left) / canvas.width * 20 - 10;
+                const y = 10 - (event.clientY - rect.top) / canvas.height * 20;
+                
+                const dx = x - car.x;
+                const dy = y - car.y;
+                const length = Math.sqrt(dx*dx + dy*dy);
+                if (length > 0) {
+                    car.dirX = dx / length;
+                    car.dirY = dy / length;
+                }
+            });
+
+            gl.clearColor(1.0, 1.0, 1.0, 1.0);
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>
