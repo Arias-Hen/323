@@ -1,0 +1,1207 @@
+<!DOCTYPE HTML>
+<html>
+
+<head>
+    <title>Escenario 3D con Cuaterniones y Texturas</title>
+    <meta http-equiv="content-type" content="text/html;charset=utf-8">
+    <canvas id="webglcanvas" style="border:none;" width="1000" height="500"></canvas>
+    <!-- Texturas (ocultas) -->
+    <img id="wallTexture" src="pared3.PNG" hidden>
+    <img id="floorTexture" src="suelo2.PNG" hidden>
+    <img id="roofTexture" src="techo.PNG" hidden>
+    <img id="woodTexture" src="madera.PNG" hidden>
+</head>
+
+<body>
+    <div id="content">
+        <div id="ui-overlay">
+            <button id="reset">🔄</button>
+            <button id="toggleSecondFloor">2do Piso</button>
+            <button id="toggleTecho">Techo</button>
+            <div id="projection-controls">
+                <h3>Proyección:</h3>
+                <div>
+                    <input type="radio" id="proj-perspective" name="projection" value="perspective" checked>
+                    <label for="proj-perspective">Perspectiva</label>
+                </div>
+                <div>
+                    <input type="radio" id="proj-frustum" name="projection" value="frustum">
+                    <label for="proj-frustum">Frustum</label>
+                </div>
+                <div>
+                    <input type="radio" id="proj-ortho" name="projection" value="ortho">
+                    <label for="proj-ortho">Paralela</label>
+                </div>
+            </div>
+        </div>
+        <div id="canvas-holder">
+            <canvas id="webglcanvas" style="border:none;" width="1000" height="1000"></canvas>
+        </div>
+    </div>
+    <script id="vs" type="vertex">
+        #version 300 es
+        uniform mat4 uMatrizProyeccion;
+        uniform mat4 uMatrizVista;
+        uniform mat4 uMatrizModelo;
+        layout(location = 0) in vec3 aVertices;
+        layout(location = 1) in vec2 aTexCoords;
+        out vec2 vTexCoords;
+        void main() {
+            vTexCoords = aTexCoords;  
+            gl_Position = uMatrizProyeccion * uMatrizVista * uMatrizModelo * vec4(aVertices, 1.0);
+        }
+    </script>
+
+    <script id="fs" type="fragment">
+        #version 300 es
+        precision highp float;
+        uniform sampler2D uTexture;
+        in vec2 vTexCoords;
+        out vec4 color;
+        void main() {
+            color = texture(uTexture, vTexCoords);
+        }
+    </script>
+
+    <script>
+        "use strict";
+
+        // Clase Quaternion para manejar rotaciones
+        class Quaternion {
+            constructor(x = 0, y = 0, z = 0, w = 1) {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+                this.w = w;
+            }
+
+            static fromAxisAngle(axis, angle) {
+                const halfAngle = angle / 2;
+                const s = Math.sin(halfAngle);
+                return new Quaternion(
+                    axis[0] * s,
+                    axis[1] * s,
+                    axis[2] * s,
+                    Math.cos(halfAngle)
+                ).normalize();
+            }
+
+            multiply(q) {
+                const x = this.w * q.x + this.x * q.w + this.y * q.z - this.z * q.y;
+                const y = this.w * q.y - this.x * q.z + this.y * q.w + this.z * q.x;
+                const z = this.w * q.z + this.x * q.y - this.y * q.x + this.z * q.w;
+                const w = this.w * q.w - this.x * q.x - this.y * q.y - this.z * q.z;
+                this.x = x;
+                this.y = y;
+                this.z = z;
+                this.w = w;
+                return this.normalize();
+            }
+
+            normalize() {
+                const length = Math.sqrt(this.x ** 2 + this.y ** 2 + this.z ** 2 + this.w ** 2);
+                if (length === 0) {
+                    this.w = 1;
+                    return this;
+                }
+                const invLength = 1 / length;
+                this.x *= invLength;
+                this.y *= invLength;
+                this.z *= invLength;
+                this.w *= invLength;
+                return this;
+            }
+
+            toMatrix() {
+                const x = this.x, y = this.y, z = this.z, w = this.w;
+                const xx = x * x, xy = x * y, xz = x * z, xw = x * w;
+                const yy = y * y, yz = y * z, yw = y * w;
+                const zz = z * z, zw = z * w;
+
+                const m = new Array(16);
+                m[0] = 1 - 2 * (yy + zz);
+                m[1] = 2 * (xy + zw);
+                m[2] = 2 * (xz - yw);
+                m[3] = 0;
+
+                m[4] = 2 * (xy - zw);
+                m[5] = 1 - 2 * (xx + zz);
+                m[6] = 2 * (yz + xw);
+                m[7] = 0;
+
+                m[8] = 2 * (xz + yw);
+                m[9] = 2 * (yz - xw);
+                m[10] = 1 - 2 * (xx + yy);
+                m[11] = 0;
+
+                m[12] = 0;
+                m[13] = 0;
+                m[14] = 0;
+                m[15] = 1;
+
+                return m;
+            }
+
+            clone() {
+                return new Quaternion(this.x, this.y, this.z, this.w);
+            }
+        }
+
+        var canvas, gl, programaID;
+        var cubos = [];
+        var selectedCubeIndex = -1;
+        var antX, antY, boton_izq_presionado = false;
+        var groupQuaternion = new Quaternion();
+        var groupMatrix = new Array(16);
+        var selectedGroup = true;
+        var tx = 0, ty = 0;
+        var MatrizTemp = new Array(16);
+        var escala = 1.0;
+        const ESCALA_MIN = 0.1;
+        const ESCALA_MAX = 5.0;
+        var boton_izq_presionado = false;
+        var boton_der_presionado = false;
+        var rotacionX = 0;
+        var rotacionY = 0;
+        var rotacionZ = 0;
+        var ultimaPosX, ultimaPosY;
+        // Matrices
+        var MatrizProyeccion = new Array(16);
+        var MatrizVista = new Array(16);
+        var uMatrizProyeccion, uMatrizVista, uMatrizModelo, uTexture;
+        // Texturas
+        var wallTexture, floorTexture, roofTexture, woodTexture;
+
+        function toRadians(grados) {
+            return grados * Math.PI / 180;
+        }
+
+        function identidad(r) {
+            r[0] = 1; r[4] = 0; r[8] = 0; r[12] = 0;
+            r[1] = 0; r[5] = 1; r[9] = 0; r[13] = 0;
+            r[2] = 0; r[6] = 0; r[10] = 1; r[14] = 0;
+            r[3] = 0; r[7] = 0; r[11] = 0; r[15] = 1;
+        }
+
+        function traslacion(matriz, tx, ty, tz) {
+            var r = new Array(16);
+            r[0] = 1; r[4] = 0; r[8] = 0; r[12] = tx;
+            r[1] = 0; r[5] = 1; r[9] = 0; r[13] = ty;
+            r[2] = 0; r[6] = 0; r[10] = 1; r[14] = tz;
+            r[3] = 0; r[7] = 0; r[11] = 0; r[15] = 1;
+            multiplica(matriz, matriz, r);
+        }
+
+        function perspective(r, fovy, aspect, near, far) {
+            const f = 1.0 / Math.tan(fovy * Math.PI / 360);
+            r[0] = f / aspect; r[4] = 0; r[8] = 0; r[12] = 0;
+            r[1] = 0; r[5] = f; r[9] = 0; r[13] = 0;
+            r[2] = 0; r[6] = 0; r[10] = (far + near) / (near - far); r[14] = 2 * far * near / (near - far);
+            r[3] = 0; r[7] = 0; r[11] = -1; r[15] = 0;
+        }
+
+        function escalacion(matriz, sx, sy, sz) {
+            var r = new Array(16);
+            r[0] = sx; r[4] = 0; r[8] = 0; r[12] = 0;
+            r[1] = 0; r[5] = sy; r[9] = 0; r[13] = 0;
+            r[2] = 0; r[6] = 0; r[10] = sz; r[14] = 0;
+            r[3] = 0; r[7] = 0; r[11] = 0; r[15] = 1;
+            multiplica(matriz, matriz, r);
+        }
+
+        function multiplica(c, a, b) {
+            let r = new Array(16);
+            for (let i = 0; i < 4; i++) {
+                for (let j = 0; j < 4; j++) {
+                    let s = 0;
+                    for (let k = 0; k < 4; k++)
+                        s += a[i + k * 4] * b[k + j * 4];
+                    r[i + j * 4] = s;
+                }
+            }
+            for (let i = 0; i < 16; i++) c[i] = r[i];
+        }
+
+        function ortho(r, izq, der, abj, arr, cerca, lejos) {
+            r[0] = 2 / (der - izq); r[4] = 0; r[8] = 0; r[12] = -(der + izq) / (der - izq);
+            r[1] = 0; r[5] = 2 / (arr - abj); r[9] = 0; r[13] = -(arr + abj) / (arr - abj);
+            r[2] = 0; r[6] = 0; r[10] = -2 / (lejos - cerca); r[14] = -(lejos + cerca) / (lejos - cerca);
+            r[3] = 0; r[7] = 0; r[11] = 0; r[15] = 1;
+        }
+
+        function invertMatrix(out, mat) {
+            let a = mat[0], b = mat[1], c = mat[2], d = mat[3],
+                e = mat[4], f = mat[5], g = mat[6], h = mat[7],
+                i = mat[8], j = mat[9], k = mat[10], l = mat[11],
+                m = mat[12], n = mat[13], o = mat[14], p = mat[15];
+
+            let det = a * (f * (k * p - l * o) - g * (j * p - l * n) + h * (j * o - k * n))
+                - b * (e * (k * p - l * o) - g * (i * p - l * m) + h * (i * o - k * m))
+                + c * (e * (j * p - l * n) - f * (i * p - l * m) + h * (i * n - j * m))
+                - d * (e * (j * o - k * n) - f * (i * o - k * m) + g * (i * n - j * m));
+
+            if (det === 0) return false;
+
+            det = 1.0 / det;
+
+            out[0] = (f * (k * p - l * o) - g * (j * p - l * n) + h * (j * o - k * n)) * det;
+            out[1] = -(b * (k * p - l * o) - c * (j * p - l * n) + d * (j * o - k * n)) * det;
+            out[2] = (b * (g * p - l * o) - c * (f * p - l * n) + d * (f * o - g * n)) * det;
+            out[3] = -(b * (g * o - k * n) - c * (f * o - j * n) + d * (f * k - g * j)) * det;
+
+            out[4] = -(e * (k * p - l * o) - g * (i * p - l * m) + h * (i * o - k * m)) * det;
+            out[5] = (a * (k * p - l * o) - c * (i * p - l * m) + d * (i * o - k * m)) * det;
+            out[6] = -(a * (g * p - l * o) - c * (e * p - l * m) + d * (e * o - g * m)) * det;
+            out[7] = (a * (g * o - k * m) - c * (e * o - i * m) + d * (e * k - g * i)) * det;
+
+            out[8] = (e * (j * p - l * n) - f * (i * p - l * m) + h * (i * n - j * m)) * det;
+            out[9] = -(a * (j * p - l * n) - b * (i * p - l * m) + d * (i * n - j * m)) * det;
+            out[10] = (a * (f * p - l * n) - b * (e * p - l * m) + d * (e * n - f * m)) * det;
+            out[11] = -(a * (f * n - j * m) - b * (e * n - i * m) + d * (e * j - f * i)) * det;
+
+            out[12] = -(e * (j * o - k * n) - f * (i * o - k * m) + g * (i * n - j * m)) * det;
+            out[13] = (a * (j * o - k * n) - b * (i * o - k * m) + c * (i * n - j * m)) * det;
+            out[14] = -(a * (f * o - g * n) - b * (e * o - g * m) + c * (e * n - f * m)) * det;
+            out[15] = (a * (f * k - g * j) - b * (e * k - g * i) + c * (e * j - f * i)) * det;
+
+            return true;
+        }
+
+        function frustum(r, izq, der, abj, arr, cerca, lejos) {
+            r[0] = 2 * cerca / (der - izq); r[4] = 0; r[8] = (der + izq) / (der - izq); r[12] = 0;
+            r[1] = 0; r[5] = 2 * cerca / (arr - abj); r[9] = (arr + abj) / (arr - abj); r[13] = 0;
+            r[2] = 0; r[6] = 0; r[10] = -(lejos + cerca) / (lejos - cerca); r[14] = -2 * lejos * cerca / (lejos - cerca);
+            r[3] = 0; r[7] = 0; r[11] = -1; r[15] = 0;
+        }
+
+        function loadTexture(gl, imageElement) {
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+
+            // Configuración básica de textura
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+            // Cargar la imagen
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, imageElement);
+
+            return texture;
+        }
+
+        class TexturedCube {
+            constructor(gl, textureType = 'wall') {
+                this.rotationQuat = new Quaternion();
+                this.textureType = textureType;
+
+                // Coordenadas de vértices para un cubo
+                const vertices = [
+                    // Front face
+                    -1.0, -1.0, 1.0,
+                    1.0, -1.0, 1.0,
+                    1.0, 1.0, 1.0,
+                    -1.0, 1.0, 1.0,
+
+                    // Back face
+                    -1.0, -1.0, -1.0,
+                    -1.0, 1.0, -1.0,
+                    1.0, 1.0, -1.0,
+                    1.0, -1.0, -1.0,
+
+                    // Top face
+                    -1.0, 1.0, -1.0,
+                    -1.0, 1.0, 1.0,
+                    1.0, 1.0, 1.0,
+                    1.0, 1.0, -1.0,
+
+                    // Bottom face
+                    -1.0, -1.0, -1.0,
+                    1.0, -1.0, -1.0,
+                    1.0, -1.0, 1.0,
+                    -1.0, -1.0, 1.0,
+
+                    // Right face
+                    1.0, -1.0, -1.0,
+                    1.0, 1.0, -1.0,
+                    1.0, 1.0, 1.0,
+                    1.0, -1.0, 1.0,
+
+                    // Left face
+                    -1.0, -1.0, -1.0,
+                    -1.0, -1.0, 1.0,
+                    -1.0, 1.0, 1.0,
+                    -1.0, 1.0, -1.0,
+                ];
+
+                // Coordenadas de textura para cada cara
+                const textureCoords = [
+                    // Front
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    0.0, 1.0,
+                    // Back
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    0.0, 1.0,
+                    0.0, 0.0,
+                    // Top
+                    0.0, 1.0,
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    // Bottom
+                    1.0, 1.0,
+                    0.0, 1.0,
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    // Right
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    0.0, 1.0,
+                    0.0, 0.0,
+                    // Left
+                    0.0, 0.0,
+                    1.0, 0.0,
+                    1.0, 1.0,
+                    0.0, 1.0,
+                ];
+
+                // Índices para dibujar las caras
+                const indices = [
+                    0, 1, 2, 0, 2, 3,    // front
+                    4, 5, 6, 4, 6, 7,    // back
+                    8, 9, 10, 8, 10, 11,   // top
+                    12, 13, 14, 12, 14, 15,   // bottom
+                    16, 17, 18, 16, 18, 19,   // right
+                    20, 21, 22, 20, 22, 23,    // left
+                ];
+
+                this.VAO = gl.createVertexArray();
+                gl.bindVertexArray(this.VAO);
+
+                // Vértices
+                this.vbo = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+                gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+                gl.enableVertexAttribArray(0);
+
+                // Coordenadas de textura
+                this.tbo = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.tbo);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+                gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+                gl.enableVertexAttribArray(1);
+
+                // Índices
+                this.ibo = gl.createBuffer();
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ibo);
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+
+                gl.bindVertexArray(null);
+
+                this.posX = 0;
+                this.posY = 0;
+                this.posZ = 0;
+                this.scaleX = 1;
+                this.scaleY = 1;
+                this.scaleZ = 1;
+                this.individualMatrix = new Array(16);
+                identidad(this.individualMatrix);
+                this.indicesCount = indices.length;
+            }
+
+            updateIndividualMatrix() {
+                identidad(this.individualMatrix);
+                traslacion(this.individualMatrix, this.posX, this.posY, this.posZ);
+                const rotationMatrix = this.rotationQuat.toMatrix();
+                multiplica(this.individualMatrix, this.individualMatrix, rotationMatrix);
+                escalacion(this.individualMatrix, this.scaleX, this.scaleY, this.scaleZ);
+            }
+
+            getModelMatrix(groupMatrix) {
+                this.updateIndividualMatrix();
+                const finalMatrix = new Array(16);
+                multiplica(finalMatrix, groupMatrix, this.individualMatrix);
+                return finalMatrix;
+            }
+
+            dibuja(gl, modelMatrix) {
+                gl.bindVertexArray(this.VAO);
+                gl.uniformMatrix4fv(uMatrizModelo, false, modelMatrix);
+
+                // Seleccionar textura según el tipo
+                let texture;
+                switch (this.textureType) {
+                    case 'floor':
+                        texture = floorTexture;
+                        break;
+                    case 'roof':
+                        texture = roofTexture;
+                        break;
+                    case 'wood':
+                        texture = woodTexture;
+                        break;
+                    case 'wall':
+                    default:
+                        texture = wallTexture;
+                }
+
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.uniform1i(uTexture, 0);
+
+                gl.drawElements(gl.TRIANGLES, this.indicesCount, gl.UNSIGNED_SHORT, 0);
+            }
+        }
+
+        class TexturedHollowCube {
+            constructor(gl, textureType = 'wall') {
+                this.rotationQuat = new Quaternion();
+                this.textureType = textureType;
+
+                const grosor = 0.05;
+                const alturaPared = 1.5;
+
+                // Coordenadas de vértices para un cubo hueco
+                const vertices = [
+                    // Pared frontal (exterior e interior)
+                    -1, -1, 1, 1, -1, 1, 1, alturaPared, 1, -1, alturaPared, 1,   // exterior
+                    -1 + grosor, -1 + grosor, 1 - grosor, 1 - grosor, -1 + grosor, 1 - grosor,
+                    1 - grosor, alturaPared - grosor, 1 - grosor, -1 + grosor, alturaPared - grosor, 1 - grosor,  // interior
+
+                    // Pared trasera
+                    -1, alturaPared, -1, 1, alturaPared, -1, 1, -1, -1, -1, -1, -1,  // exterior
+                    -1 + grosor, alturaPared - grosor, -1 + grosor, 1 - grosor, alturaPared - grosor, -1 + grosor,
+                    1 - grosor, -1 + grosor, -1 + grosor, -1 + grosor, -1 + grosor, -1 + grosor,  // interior
+
+                    // Pared izquierda
+                    -1, -1, -1, -1, -1, 1, -1, alturaPared, 1, -1, alturaPared, -1,  // exterior
+                    -1 + grosor, -1 + grosor, -1 + grosor, -1 + grosor, -1 + grosor, 1 - grosor,
+                    -1 + grosor, alturaPared - grosor, 1 - grosor, -1 + grosor, alturaPared - grosor, -1 + grosor,  // interior
+
+                    // Pared derecha
+                    1, -1, 1, 1, -1, -1, 1, alturaPared, -1, 1, alturaPared, 1,  // exterior
+                    1 - grosor, -1 + grosor, 1 - grosor, 1 - grosor, -1 + grosor, -1 + grosor,
+                    1 - grosor, alturaPared - grosor, -1 + grosor, 1 - grosor, alturaPared - grosor, 1 - grosor,  // interior
+
+                    // Suelo (solo exterior)
+                    -1, -1, -1, 1, -1, -1, 1, -1, 1, -1, -1, 1   // exterior
+                ];
+
+                // Coordenadas de textura
+                const textureCoords = [
+                    // Pared frontal (exterior)
+                    0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0,
+                    // Pared frontal (interior)
+                    0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0,
+
+                    // Pared trasera (exterior)
+                    0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0,
+                    // Pared trasera (interior)
+                    0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0,
+
+                    // Pared izquierda (exterior)
+                    0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0,
+                    // Pared izquierda (interior)
+                    0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0,
+
+                    // Pared derecha (exterior)
+                    0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0,
+                    // Pared derecha (interior)
+                    0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0,
+
+                    // Suelo (exterior)
+                    0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0
+                ];
+
+                // Índices para dibujar las caras
+                const indices = [
+                    // Pared frontal (exterior)
+                    0, 1, 2, 0, 2, 3,
+                    // Pared frontal (interior)
+                    4, 5, 6, 4, 6, 7,
+                    // Bordes frontales
+                    0, 4, 5, 0, 5, 1,
+                    1, 5, 6, 1, 6, 2,
+                    2, 6, 7, 2, 7, 3,
+                    3, 7, 4, 3, 4, 0,
+
+                    // Pared trasera
+                    8, 9, 10, 8, 10, 11, 12, 13, 14, 12, 14, 15,
+                    8, 12, 13, 8, 13, 9, 9, 13, 14, 9, 14, 10,
+                    10, 14, 15, 10, 15, 11, 11, 15, 12, 11, 12, 8,
+
+                    // Pared izquierda
+                    16, 17, 18, 16, 18, 19, 20, 21, 22, 20, 22, 23,
+                    16, 20, 21, 16, 21, 17, 17, 21, 22, 17, 22, 18,
+                    18, 22, 23, 18, 23, 19, 19, 23, 20, 19, 20, 16,
+
+                    // Pared derecha
+                    24, 25, 26, 24, 26, 27, 28, 29, 30, 28, 30, 31,
+                    24, 28, 29, 24, 29, 25, 25, 29, 30, 25, 30, 26,
+                    26, 30, 31, 26, 31, 27, 27, 31, 28, 27, 28, 24,
+
+                    // Suelo (solo exterior)
+                    32, 33, 34, 32, 34, 35
+                ];
+
+                this.VAO = gl.createVertexArray();
+                gl.bindVertexArray(this.VAO);
+
+                // Vértices
+                this.vbo = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+                gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+                gl.enableVertexAttribArray(0);
+
+                // Coordenadas de textura
+                this.tbo = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.tbo);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+                gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, 0);
+                gl.enableVertexAttribArray(1);
+
+                // Índices
+                this.ibo = gl.createBuffer();
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ibo);
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+
+                gl.bindVertexArray(null);
+
+                this.posX = 0;
+                this.posY = 0;
+                this.posZ = 0;
+                this.scaleX = 1;
+                this.scaleY = 1;
+                this.scaleZ = 1;
+                this.individualMatrix = new Array(16);
+                identidad(this.individualMatrix);
+                this.indicesCount = indices.length;
+            }
+
+            updateIndividualMatrix() {
+                identidad(this.individualMatrix);
+                traslacion(this.individualMatrix, this.posX, this.posY, this.posZ);
+                const rotationMatrix = this.rotationQuat.toMatrix();
+                multiplica(this.individualMatrix, this.individualMatrix, rotationMatrix);
+                escalacion(this.individualMatrix, this.scaleX, this.scaleY, this.scaleZ);
+            }
+
+            getModelMatrix(groupMatrix) {
+                this.updateIndividualMatrix();
+                const finalMatrix = new Array(16);
+                multiplica(finalMatrix, groupMatrix, this.individualMatrix);
+                return finalMatrix;
+            }
+
+            dibuja(gl, modelMatrix) {
+                gl.bindVertexArray(this.VAO);
+                gl.uniformMatrix4fv(uMatrizModelo, false, modelMatrix);
+
+                // Seleccionar textura según el tipo
+                let texture;
+                switch (this.textureType) {
+                    case 'floor':
+                        texture = floorTexture;
+                        break;
+                    case 'roof':
+                        texture = roofTexture;
+                        break;
+                    case 'wood':
+                        texture = woodTexture;
+                        break;
+                    case 'wall':
+                    default:
+                        texture = wallTexture;
+                }
+
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.uniform1i(uTexture, 0);
+
+                gl.drawElements(gl.TRIANGLES, this.indicesCount, gl.UNSIGNED_SHORT, 0);
+            }
+        }
+
+        function compilarShaders() {
+            const vs = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vs, document.getElementById('vs').text.trim());
+            gl.compileShader(vs);
+
+            const fs = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fs, document.getElementById('fs').text.trim());
+            gl.compileShader(fs);
+
+            programaID = gl.createProgram();
+            gl.attachShader(programaID, vs);
+            gl.attachShader(programaID, fs);
+            gl.linkProgram(programaID);
+            gl.useProgram(programaID);
+        }
+
+        function dibuja() {
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            // Configurar matriz de proyección según la selección
+            const projType = document.querySelector('input[name="projection"]:checked').value;
+            const aspect = canvas.width / canvas.height;
+
+            if (projType === "perspective") {
+                perspective(MatrizProyeccion, 60, aspect, 1, 300);
+            } else if (projType === "frustum") {
+                frustum(MatrizProyeccion, -2 * aspect, 2 * aspect, -2, 2, 1, 300);
+            } else if (projType === "ortho") {
+                ortho(MatrizProyeccion, -30, 30, -30, 30, -30, 30);
+            }
+
+            gl.uniformMatrix4fv(uMatrizProyeccion, false, MatrizProyeccion);
+
+            // Resto del código de dibujo...
+            let globalMatrix = new Array(16);
+            identidad(globalMatrix);
+            escalacion(globalMatrix, escala, escala, escala);
+            traslacion(globalMatrix, tx, ty, 0);
+            multiplica(globalMatrix, globalMatrix, groupMatrix);
+
+            cubos.forEach(cubo => {
+                if (cubo.visible !== false) {
+                    const modelMatrix = cubo.getModelMatrix(globalMatrix);
+                    cubo.dibuja(gl, modelMatrix);
+                }
+            });
+
+            requestAnimationFrame(dibuja);
+        }
+
+        function mouseDown(e) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = (e.clientX || e.touches[0].clientX) - rect.left;
+            const mouseY = (e.clientY || e.touches[0].clientY) - rect.top;
+
+            // Prevenir menú contextual en clic derecho
+            if (e.button === 2) {
+                e.preventDefault();
+                boton_der_presionado = true;
+                antX = mouseX;
+                antY = mouseY;
+                return;
+            }
+
+            // Código existente para selección y rotación
+            const ndcX = (mouseX / canvas.width) * 2 - 1;
+            const ndcY = 1 - (mouseY / canvas.height) * 2;
+            const worldX = ndcX * 5;
+            const worldY = ndcY * 5;
+
+            selectedCubeIndex = -1;
+            selectedGroup = true;
+
+            for (let i = 0; i < cubos.length; i++) {
+                const modelMatrix = cubos[i].getModelMatrix(groupMatrix);
+                const invModel = new Array(16);
+                if (invertMatrix(invModel, modelMatrix)) {
+                    const localX = invModel[0] * worldX + invModel[4] * worldY + invModel[12];
+                    const localY = invModel[1] * worldX + invModel[5] * worldY + invModel[13];
+                    const localZ = invModel[2] * worldX + invModel[6] * worldY + invModel[14];
+                    if (Math.abs(localX) <= 1 && Math.abs(localY) <= 1 && Math.abs(localZ) <= 1) {
+                        selectedCubeIndex = i;
+                        selectedGroup = true;
+                        break;
+                    }
+                }
+            }
+
+            if (selectedGroup || selectedCubeIndex !== -1) {
+                antX = mouseX;
+                antY = mouseY;
+                boton_izq_presionado = true;
+            }
+        }
+
+        function mouseMove(e) {
+            if (!boton_izq_presionado && !boton_der_presionado && !e.touches) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const posx = (e.clientX || e.touches[0].clientX) - rect.left;
+            const posy = (e.clientY || e.touches[0].clientY) - rect.top;
+            const dx = posx - antX;
+            const dy = posy - antY;
+
+            if (boton_izq_presionado) {
+                // Rotación con cuaterniones (clic izquierdo)
+                const sensitivity = 0.5 * (Math.PI / 180);
+                const deltaY = dx * sensitivity;
+                const deltaX = dy * sensitivity;
+
+                const qY = Quaternion.fromAxisAngle([0, 1, 0], deltaY);
+                const qX = Quaternion.fromAxisAngle([1, 0, 0], deltaX);
+
+                const deltaQ = qX.multiply(qY);
+                const currentQ = groupQuaternion.clone();
+                groupQuaternion = deltaQ.multiply(currentQ).normalize();
+
+                identidad(groupMatrix);
+                const rotationMatrix = groupQuaternion.toMatrix();
+                multiplica(groupMatrix, groupMatrix, rotationMatrix);
+            }
+            else if (boton_der_presionado) {
+                // Movimiento con clic derecho
+                const sensitivity = 0.02; // Ajusta este valor para cambiar la velocidad del movimiento
+                tx += dx * sensitivity;
+                ty -= dy * sensitivity; // Invertir eje Y
+            }
+            else if (selectedCubeIndex !== -1) {
+                // Rotación individual de cubo (código existente)
+                const sensitivity = 0.36 * (Math.PI / 180);
+                const deltaY = dx * sensitivity;
+                const deltaX = dy * sensitivity;
+
+                const qY = Quaternion.fromAxisAngle([0, 1, 0], deltaY);
+                const qX = Quaternion.fromAxisAngle([1, 0, 0], deltaX);
+
+                const deltaQ = qX.multiply(qY);
+                const currentQ = cubos[selectedCubeIndex].rotationQuat.clone();
+                cubos[selectedCubeIndex].rotationQuat = deltaQ.multiply(currentQ).normalize();
+            }
+
+            antX = posx;
+            antY = posy;
+        }
+
+        function handleWheel(e) {
+            e.preventDefault();
+            const delta = Math.sign(e.deltaY);
+            escala *= delta > 0 ? 0.9 : 1.1;
+            escala = Math.max(ESCALA_MIN, Math.min(ESCALA_MAX, escala));
+        }
+
+        function mouseUp(e) {
+            boton_izq_presionado = false;
+            boton_der_presionado = false;
+            selectedCubeIndex = -1;
+        }
+
+        function touchHandler(e) {
+            e.preventDefault();
+
+            if (e.type === "touchstart") {
+                const touch = e.touches[0];
+                const mouseEvent = new MouseEvent("mousedown", {
+                    clientX: touch.clientX,
+                    clientY: touch.clientY
+                });
+                mouseDown(mouseEvent);
+            } else if (e.type === "touchmove") {
+                const touch = e.touches[0];
+                const mouseEvent = new MouseEvent("mousemove", {
+                    clientX: touch.clientX,
+                    clientY: touch.clientY
+                });
+                mouseMove(mouseEvent);
+            }
+        }
+
+        function touchEnd(e) {
+            e.preventDefault();
+            const mouseEvent = new MouseEvent("mouseup");
+            mouseUp(mouseEvent);
+        }
+
+        function reinicia() {
+            groupQuaternion = new Quaternion();
+            identidad(groupMatrix);
+            tx = 0;
+            ty = 0;
+            escala = 1.0; // Restablecer zoom
+            cubos.forEach(cubo => {
+                cubo.rotationQuat = new Quaternion();
+                identidad(cubo.individualMatrix);
+            });
+        }
+
+        function main() {
+            canvas = document.getElementById("webglcanvas");
+            gl = canvas.getContext("webgl2");
+            if (!gl) {
+                alert("WebGL 2 no está disponible en tu navegador");
+                return;
+            }
+
+            identidad(groupMatrix);
+
+            // Compilar shaders
+            compilarShaders();
+
+            // Cargar texturas
+            wallTexture = loadTexture(gl, document.getElementById('wallTexture'));
+            floorTexture = loadTexture(gl, document.getElementById('floorTexture'));
+            roofTexture = loadTexture(gl, document.getElementById('roofTexture'));
+            woodTexture = loadTexture(gl, document.getElementById('woodTexture'));
+
+            // Obtener ubicaciones de uniformes
+            uMatrizProyeccion = gl.getUniformLocation(programaID, "uMatrizProyeccion");
+            uMatrizVista = gl.getUniformLocation(programaID, "uMatrizVista");
+            uMatrizModelo = gl.getUniformLocation(programaID, "uMatrizModelo");
+            uTexture = gl.getUniformLocation(programaID, "uTexture");
+
+            // Crear objetos de la escena con texturas
+            cubos.push(new TexturedCube(gl, 'floor')); // Suelo
+            cubos[0].isGround = true;
+            cubos[0].posX = 0;
+            cubos[0].posY = -2;
+            cubos[0].posZ = 0;
+            cubos[0].scaleX = 15;
+            cubos[0].scaleY = 0.5;
+            cubos[0].scaleZ = 15;
+            cubos[0].visible = true;
+
+            cubos.push(new TexturedHollowCube(gl, 'wall')); // Base de la casa
+            cubos[1].posX = 0;
+            cubos[1].posZ = 0;
+            cubos[1].posY = 0.01;
+            cubos[1].scaleX = 12;
+            cubos[1].scaleY = 1.5;
+            cubos[1].scaleZ = 12;
+            cubos[1].visible = true;
+            //h
+            cubos.push(new TexturedHollowCube(gl, 'wall')); // Base de la casa
+            cubos[2].posX = -7;
+            cubos[2].posZ = -7;
+            cubos[2].posY = 0.01;
+            cubos[2].scaleX = 5;
+            cubos[2].scaleY = 1.5;
+            cubos[2].scaleZ = 5;
+            cubos[2].visible = true;
+            //h2
+            cubos.push(new TexturedHollowCube(gl, 'wall')); // Base de la casa
+            cubos[3].posX = 7;
+            cubos[3].posZ = -7;
+            cubos[3].posY = 0.01;
+            cubos[3].scaleX = 5;
+            cubos[3].scaleY = 1.5;
+            cubos[3].scaleZ = 5;
+            cubos[3].visible = true;
+            //h3
+            cubos.push(new TexturedHollowCube(gl, 'wall')); // Base de la casa
+            cubos[4].posX = -7;
+            cubos[4].posZ = 7;
+            cubos[4].posY = 0.01;
+            cubos[4].scaleX = 5;
+            cubos[4].scaleY = 1.5;
+            cubos[4].scaleZ = 5;
+            cubos[4].visible = true;
+            //1er piso
+            cubos.push(new TexturedHollowCube(gl, 'wall'));
+            cubos[5].posX = 0;
+            cubos[5].posZ = 0;
+            cubos[5].posY = 3.7;
+            cubos[5].scaleX = 12;
+            cubos[5].scaleY = 1.5;
+            cubos[5].scaleZ = 12;
+            cubos[5].visible = true;
+            //1er piso h1
+            cubos.push(new TexturedHollowCube(gl, 'wall'));
+            cubos[6].posX = -6;
+            cubos[6].posZ = 6;
+            cubos[6].posY = 3.7;
+            cubos[6].scaleX = 6;
+            cubos[6].scaleY = 1.5;
+            cubos[6].scaleZ = 6;
+            cubos[6].visible = true;
+            //1er piso h2
+            cubos.push(new TexturedHollowCube(gl, 'wall'));
+            cubos[7].posX = -6;
+            cubos[7].posZ = -6;
+            cubos[7].posY = 3.7;
+            cubos[7].scaleX = 6;
+            cubos[7].scaleY = 1.5;
+            cubos[7].scaleZ = 6;
+            cubos[7].visible = true;
+            //1er piso h3
+            cubos.push(new TexturedHollowCube(gl, 'wall'));
+            cubos[8].posX = 2;
+            cubos[8].posZ = -6;
+            cubos[8].posY = 3.7;
+            cubos[8].scaleX = 2;
+            cubos[8].scaleY = 1.5;
+            cubos[8].scaleZ = 6;
+            cubos[8].visible = true;
+            //techo 
+            cubos.push(new TexturedCube(gl, 'roof'));
+            cubos[9].isGround = true;
+            cubos[9].posX = 0;
+            cubos[9].posY = 6.5;
+            cubos[9].posZ = 0;
+            cubos[9].scaleX = 15;
+            cubos[9].scaleY = 0.5;
+            cubos[9].scaleZ = 15;
+            cubos[9].visible = true;
+
+            // Muebles con textura de madera
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = 7;
+            cubos[cubos.length - 1].posZ = 0;
+            cubos[cubos.length - 1].posY = 0.2;
+            cubos[cubos.length - 1].scaleX = 4;
+            cubos[cubos.length - 1].scaleY = 0.5;
+            cubos[cubos.length - 1].scaleZ = 1;
+
+            // Mesa de centro
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = 7;
+            cubos[cubos.length - 1].posZ = 4;
+            cubos[cubos.length - 1].posY = 0.51;
+            cubos[cubos.length - 1].scaleX = 2;
+            cubos[cubos.length - 1].scaleY = 0.2;
+            cubos[cubos.length - 1].scaleZ = 1;
+
+            // Sillas alrededor de la mesa
+            for (let i = 0; i < 4; i++) {
+                cubos.push(new TexturedCube(gl, 'wood'));
+                const angle = (i / 4) * Math.PI * 2;
+                cubos[cubos.length - 1].posX = 7 + Math.cos(angle) * 2.54;
+                cubos[cubos.length - 1].posZ = 4 + Math.sin(angle) * 2;
+                cubos[cubos.length - 1].posY = 0.51;
+                cubos[cubos.length - 1].scaleX = 0.5;
+                cubos[cubos.length - 1].scaleY = 0.5;
+                cubos[cubos.length - 1].scaleZ = 0.5;
+            }
+            // Cama (usaremos textura de madera en lugar de color blanco)
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = -7;
+            cubos[cubos.length - 1].posZ = -5;
+            cubos[cubos.length - 1].posY = 0.76;
+            cubos[cubos.length - 1].scaleX = 3;
+            cubos[cubos.length - 1].scaleY = 0.5;
+            cubos[cubos.length - 1].scaleZ = 1.5;
+
+            // Mesa de noche (ya es de madera)
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = -4.5;
+            cubos[cubos.length - 1].posZ = -5;
+            cubos[cubos.length - 1].posY = 0.51;
+            cubos[cubos.length - 1].scaleX = 0.5;
+            cubos[cubos.length - 1].scaleY = 0.4;
+            cubos[cubos.length - 1].scaleZ = 0.5;
+
+            // ----------------------------
+            // Muebles para la habitación 2 (cubos[3])
+            // ----------------------------
+
+            // Mesa de comedor
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = 7;
+            cubos[cubos.length - 1].posZ = -7;
+            cubos[cubos.length - 1].posY = 0.51;
+            cubos[cubos.length - 1].scaleX = 3;
+            cubos[cubos.length - 1].scaleY = 0.2;
+            cubos[cubos.length - 1].scaleZ = 1.5;
+
+            // Sillas de comedor
+            for (let i = 0; i < 4; i++) {
+                cubos.push(new TexturedCube(gl, 'wood'));
+                const angle = (i / 4) * Math.PI * 2;
+                cubos[cubos.length - 1].posX = 7 + Math.cos(angle) * 3.5;
+                cubos[cubos.length - 1].posZ = -7 + Math.sin(angle) * 2.2;
+                cubos[cubos.length - 1].posY = 0.51;
+                cubos[cubos.length - 1].scaleX = 0.5;
+                cubos[cubos.length - 1].scaleY = 0.5;
+                cubos[cubos.length - 1].scaleZ = 0.5;
+            }
+
+            // ----------------------------
+            // Muebles para la habitación 3 (cubos[4])
+            // ----------------------------
+
+            // Escritorio
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = -7;
+            cubos[cubos.length - 1].posZ = 5;
+            cubos[cubos.length - 1].posY = 0.51;
+            cubos[cubos.length - 1].scaleX = 1.5;
+            cubos[cubos.length - 1].scaleY = 0.2;
+            cubos[cubos.length - 1].scaleZ = 3;
+
+            // Silla de escritorio
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = -5;
+            cubos[cubos.length - 1].posZ = 5;
+            cubos[cubos.length - 1].posY = 0.51;
+            cubos[cubos.length - 1].scaleX = 0.5;
+            cubos[cubos.length - 1].scaleY = 0.5;
+            cubos[cubos.length - 1].scaleZ = 0.5;
+
+            // ----------------------------
+            // Muebles para el primer piso (cubos[5])
+            // ----------------------------
+
+            // Estantería
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = -4;
+            cubos[cubos.length - 1].posZ = 0.4;
+            cubos[cubos.length - 1].posY = 3;
+            cubos[cubos.length - 1].scaleX = 2;
+            cubos[cubos.length - 1].scaleY = 1.5;
+            cubos[cubos.length - 1].scaleZ = 0.2;
+            cubos[cubos.length - 1].visible = true;
+
+            // Lámpara (la dejamos con color amarillo, no es de madera)
+            cubos.push(new TexturedCube(gl, 'wood')); // Cambiamos a madera también
+            cubos[cubos.length - 1].posX = 0;
+            cubos[cubos.length - 1].posZ = -4;
+            cubos[cubos.length - 1].posY = 4.5;
+            cubos[cubos.length - 1].scaleX = 0.3;
+            cubos[cubos.length - 1].scaleY = 0.3;
+            cubos[cubos.length - 1].scaleZ = 0.3;
+            cubos[cubos.length - 1].visible = true;
+
+            // ----------------------------
+            // Muebles para la habitación del primer piso (cubos[6])
+            // ----------------------------
+
+            // Armario
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = -8;
+            cubos[cubos.length - 1].posZ = 0.4;
+            cubos[cubos.length - 1].posY = 3;
+            cubos[cubos.length - 1].scaleX = 1;
+            cubos[cubos.length - 1].scaleY = 1.5;
+            cubos[cubos.length - 1].scaleZ = 0.5;
+            cubos[cubos.length - 1].visible = true;
+
+            // Cama pequeña
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = -8.5;
+            cubos[cubos.length - 1].posZ = 6;
+            cubos[cubos.length - 1].posY = 2.5;
+            cubos[cubos.length - 1].scaleX = 2;
+            cubos[cubos.length - 1].scaleY = 0.3;
+            cubos[cubos.length - 1].scaleZ = 1.5;
+            cubos[cubos.length - 1].visible = true;
+
+            // Mueble adicional
+            cubos.push(new TexturedCube(gl, 'wood'));
+            cubos[cubos.length - 1].posX = -11;
+            cubos[cubos.length - 1].posZ = 6;
+            cubos[cubos.length - 1].posY = 3;
+            cubos[cubos.length - 1].scaleX = 0.5;
+            cubos[cubos.length - 1].scaleY = 1.5;
+            cubos[cubos.length - 1].scaleZ = 1.5;
+            cubos[cubos.length - 1].visible = true;
+            // Configurar eventos
+            canvas.addEventListener("mousedown", mouseDown);
+            canvas.addEventListener("mousemove", mouseMove);
+            canvas.addEventListener("mouseup", mouseUp);
+            canvas.addEventListener("wheel", handleWheel, { passive: false });
+            canvas.addEventListener("touchstart", touchHandler, { passive: false });
+            canvas.addEventListener("touchmove", touchHandler, { passive: false });
+            canvas.addEventListener("touchend", touchEnd);
+            document.getElementById("reset").onclick = reinicia;
+            document.getElementById("toggleSecondFloor").onclick = function () {
+                // Alternar visibilidad del primer piso (índice 2)
+                cubos[5].visible = !cubos[5].visible;
+                cubos[6].visible = !cubos[6].visible;
+                cubos[7].visible = !cubos[7].visible;
+                cubos[8].visible = !cubos[8].visible;
+                cubos[25].visible = !cubos[25].visible;
+                cubos[26].visible = !cubos[26].visible;
+                cubos[27].visible = !cubos[27].visible;
+                cubos[28].visible = !cubos[28].visible;
+                cubos[29].visible = !cubos[29].visible;
+            };
+            document.getElementById("toggleTecho").onclick = function () {
+                // Alternar visibilidad del segundo piso (índice 2)
+                cubos[9].visible = !cubos[9].visible;
+            };
+
+            // Configurar WebGL
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.enable(gl.DEPTH_TEST);
+            gl.clearColor(0.0, 0.0, 0.0, 1);
+
+            // Configurar matrices de proyección y vista
+            ortho(MatrizProyeccion, -20, 20, -20, 20, -20, 20);
+            identidad(MatrizVista);
+            traslacion(MatrizVista, 0, 0, -20);
+            gl.uniformMatrix4fv(uMatrizProyeccion, false, MatrizProyeccion);
+            gl.uniformMatrix4fv(uMatrizVista, false, MatrizVista);
+
+            // Iniciar bucle de renderizado
+            dibuja();
+        }
+
+        window.onload = main;
+    </script>
+</body>
+
+</html>
+<style>
+    #canvas-holder {
+        position: relative;
+        width: 500px;
+        height: 500px;
+    }
+
+    #webglcanvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        background: #f0f0f0;
+    }
+
+    #ui-overlay {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 10;
+    }
+
+    #ui-overlay button {
+        background-color: rgba(0, 0, 0, 0.6);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+
+    #ui-overlay button:hover {
+        background-color: rgba(0, 0, 0, 0.8);
+    }
+
+    #projection-controls {
+        background-color: rgba(0, 0, 0, 0.6);
+        color: white;
+        padding: 10px;
+        border-radius: 6px;
+        margin-bottom: 10px;
+    }
+
+    #projection-controls h3 {
+        margin: 0 0 8px 0;
+        font-size: 14px;
+    }
+
+    #projection-controls div {
+        margin: 4px 0;
+    }
+
+    #projection-controls label {
+        cursor: pointer;
+        font-size: 13px;
+    }
+
+    #projection-controls input {
+        margin-right: 6px;
+        cursor: pointer;
+    }
+</style>
